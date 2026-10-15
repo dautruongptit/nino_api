@@ -49,7 +49,7 @@ Dự án có **2 môi trường**, mỗi môi trường đi kèm 1 cặp file c�
 
 `application-prod.yml` chỉ chứa phần **khác** so với `application.yml` (tắt Swagger mặc định, tắt `show-sql`, thu hẹp actuator, giảm log level) — mọi giá trị khác vẫn kế thừa từ file mặc định.
 
-Cổng chạy: **8086** khi dev local (`SERVER_PORT=8086` trong `.env.dev`); **8410** khi deploy Docker (Dockerfile `EXPOSE 8410`, healthcheck và `docker-compose` map `127.0.0.1:8410:8410`).
+Cổng chạy: **8410** (dev local qua `SERVER_PORT=8410` trong `.env.dev`, và Docker: Dockerfile `EXPOSE 8410`, healthcheck, `docker-compose` map `127.0.0.1:8410:8410`).
 
 ### Chạy dev (local, không cần Docker)
 
@@ -57,7 +57,7 @@ Cổng chạy: **8086** khi dev local (`SERVER_PORT=8086` trong `.env.dev`); **8
 ./mvnw spring-boot:run
 ```
 
-Spring Boot tự đọc `.env.dev` (qua `DotenvConfig`) và dùng `application.yml` mặc định. Swagger UI: `http://localhost:8086/api/v1/swagger-ui.html`.
+Spring Boot tự đọc `.env.dev` (qua `DotenvConfig`) và dùng `application.yml` mặc định. Swagger UI: `http://localhost:8410/api/v1/swagger-ui.html`.
 
 ### Chạy prod (Docker, trên server Ubuntu)
 

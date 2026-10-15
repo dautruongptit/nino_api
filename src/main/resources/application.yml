@@ -108,7 +108,7 @@ app:
   # Timezone
   timezone: ${APP_TIMEZONE:Asia/Ho_Chi_Minh}
   openapi:
-    dev-url: http://localhost:8086
+    dev-url: http://localhost:8410
     prod-url: https://nino-api.thongtinchinhhieu.site
   firebase:
     credentials-path: firebase-service-account.json
