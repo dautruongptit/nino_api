@@ -14,7 +14,7 @@ services:
       # true: DB prod da co schema toi V22 duoc apply thu cong truoc khi
       # dung Flyway -> baseline de khong chay lai V1-V22 (xem application.yml)
       FLYWAY_BASELINE:        "true"
-      DB_URL: "jdbc:mysql://mysql:3306/${DB_NAME:-nino_db}?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh&allowPublicKeyRetrieval=true"
+      DB_URL: "jdbc:mysql://infra-mysql:3306/${DB_NAME:-nino_db}?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh&allowPublicKeyRetrieval=true"
       DB_USERNAME: ${DB_USERNAME:-root}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set in .env}
       SERVER_PORT: ${API_PORT:-8410}
