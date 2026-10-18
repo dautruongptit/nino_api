@@ -14,7 +14,7 @@ spring:
     name: nino_app
 
   datasource:
-    url: ${DB_URL:jdbc:mysql://100.106.5.35:3306/event_app?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh&allowPublicKeyRetrieval=true}
+    url: ${DB_URL:jdbc:mysql://100.106.5.35:3306/nino_db?useSSL=false&serverTimezone=Asia/Ho_Chi_Minh&allowPublicKeyRetrieval=true}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD}                    # BAT BUOC — khong co default (giong JWT_SECRET ben duoi).
                                                   # Truoc day default la "1234567890": mat khau yeu, hard-code
