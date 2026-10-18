@@ -17,7 +17,7 @@ public class DotenvConfig implements EnvironmentPostProcessor {
                                        SpringApplication application) {
         Dotenv dotenv = Dotenv.configure()
                 .directory("./")
-                .filename(".env.dev")
+                .filename(".env")
                 .ignoreIfMissing()
                 .load();
         Map<String, Object> props = new HashMap<>();
