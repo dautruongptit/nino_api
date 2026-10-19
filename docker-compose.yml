@@ -26,6 +26,7 @@ services:
     volumes:
       - ./data/uploads:/app/uploads
       - ./data/logs:/app/logs
+      - ./src/main/resources/firebase-service-account.json:/app/firebase-service-account.json:ro
     restart: unless-stopped
     networks:
       - nino-net

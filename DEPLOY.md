@@ -71,7 +71,7 @@ RESEND_API_KEY=<api_key_tu_resend.com>
 
 ## 5. Firebase service account
 
-Copy file `firebase-service-account.json` vào `src/main/resources/` trên server **trước khi build** (file này không có trong git, phải chuyển tay qua kênh an toàn — scp/secret manager, không gửi qua chat/email):
+Đặt file `firebase-service-account.json` vào `src/main/resources/` trên server (đúng đường dẫn convention của project). `docker-compose.yml` đã cấu hình tự động mount file này vào container (`/app/firebase-service-account.json:ro`) mà không cần phải build lại image khi đổi credentials:
 
 ```bash
 scp firebase-service-account.json user@server:~/nino-api/src/main/resources/

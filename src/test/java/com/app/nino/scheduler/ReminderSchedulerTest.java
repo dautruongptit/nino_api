@@ -186,7 +186,8 @@ class ReminderSchedulerTest {
 
     @Test
     void checkReminders_notYetDueReminder_sendsNothing() {
-        Event event = eventOn(LocalDate.now(), LocalTime.now().plusHours(5));
+        LocalDateTime future = LocalDateTime.now().plusHours(5);
+        Event event = eventOn(future.toLocalDate(), future.toLocalTime());
         EventReminder reminder = EventReminder.builder()
             .id(6L)
             .event(event)

@@ -8,8 +8,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
@@ -34,7 +36,7 @@ public class FirebaseConfig {
                 return;
             }
 
-            Resource resource = new ClassPathResource(credentialsPath);
+            Resource resource = resolveResource(credentialsPath);
             try (InputStream serviceAccount = resource.getInputStream()) {
                 FirebaseOptions options = FirebaseOptions.builder()
                     .setCredentials(GoogleCredentials
@@ -51,5 +53,25 @@ public class FirebaseConfig {
             // Khong throw exception — app van chay binh thuong,
             // chi tinh nang push se khong hoat dong (graceful degradation)
         }
+    }
+
+    private Resource resolveResource(String path) {
+        File directFile = new File(path);
+        if (directFile.exists() && directFile.isFile()) {
+            log.info("[Firebase] Su dung credentials tu filesystem: {}", directFile.getAbsolutePath());
+            return new FileSystemResource(directFile);
+        }
+        File appFile = new File("/app", path);
+        if (appFile.exists() && appFile.isFile()) {
+            log.info("[Firebase] Su dung credentials tu Docker app folder: {}", appFile.getAbsolutePath());
+            return new FileSystemResource(appFile);
+        }
+        File srcFile = new File("src/main/resources", path);
+        if (srcFile.exists() && srcFile.isFile()) {
+            log.info("[Firebase] Su dung credentials tu src/main/resources: {}", srcFile.getAbsolutePath());
+            return new FileSystemResource(srcFile);
+        }
+        log.info("[Firebase] Su dung credentials tu classpath: {}", path);
+        return new ClassPathResource(path);
     }
 }
