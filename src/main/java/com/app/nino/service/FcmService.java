@@ -52,13 +52,17 @@ public class FcmService {
                 .setTitle(title)
                 .setBody(body)
                 .build())
-            .putAllData(data != null ? data : Map.of())
+            .putAllData(createDataPayload(title, body, data))
             .addAllTokens(tokens)
             .setAndroidConfig(AndroidConfig.builder()
                 .setPriority(AndroidConfig.Priority.HIGH)
                 .setNotification(AndroidNotification.builder()
                     .setSound("default")
-                    .setChannelId("event_reminders")
+                    .setChannelId("nino_event_reminders")
+                    .setDefaultSound(true)
+                    .setDefaultVibrateTimings(true)
+                    .setPriority(AndroidNotification.Priority.MAX)
+                    .setVisibility(AndroidNotification.Visibility.PUBLIC)
                     .build())
                 .build())
             .setApnsConfig(ApnsConfig.builder()
@@ -118,6 +122,17 @@ public class FcmService {
 
         Message message = Message.builder()
             .setToken(fcmToken)
+            .setAndroidConfig(AndroidConfig.builder()
+                .setPriority(AndroidConfig.Priority.HIGH)
+                .setNotification(AndroidNotification.builder()
+                    .setSound("default")
+                    .setChannelId("nino_event_reminders")
+                    .setDefaultSound(true)
+                    .setDefaultVibrateTimings(true)
+                    .setPriority(AndroidNotification.Priority.MAX)
+                    .setVisibility(AndroidNotification.Visibility.PUBLIC)
+                    .build())
+                .build())
             .setNotification(Notification.builder()
                 .setTitle("Kết nối thành công")
                 .setBody("Thiết bị của bạn đã sẵn sàng nhận thông báo từ Nino")
@@ -130,5 +145,12 @@ public class FcmService {
         } catch (FirebaseMessagingException e) {
             log.error("[FCM] Test push that bai: {}", e.getMessage());
         }
+    }
+
+    private Map<String, String> createDataPayload(String title, String body, Map<String, String> data) {
+        Map<String, String> payload = new java.util.HashMap<>(data != null ? data : Map.of());
+        if (title != null) payload.putIfAbsent("title", title);
+        if (body != null) payload.putIfAbsent("body", body);
+        return payload;
     }
 }
