@@ -1,7 +1,9 @@
 package com.app.nino.service;
 
 import com.app.nino.model.entity.UserDevice;
+import com.app.nino.repository.LoginHistoryRepository;
 import com.app.nino.repository.UserDeviceRepository;
+import java.time.LocalDateTime;
 import com.google.firebase.FirebaseApp;
 import com.google.firebase.messaging.*;
 import lombok.RequiredArgsConstructor;
@@ -18,7 +20,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class FcmService {
 
-    private final UserDeviceRepository deviceRepo;
+    private final UserDeviceRepository   deviceRepo;
+    private final LoginHistoryRepository loginHistoryRepo;
 
     /**
      * Gui push notification toi TAT CA thiet bi cua 1 user.
@@ -34,6 +37,17 @@ public class FcmService {
 
         if (FirebaseApp.getApps().isEmpty()) {
             log.warn("[FCM] FirebaseApp chua duoc khoi tao — bo qua gui push (userId={})", userId);
+            return;
+        }
+
+        // Kiem tra phien dang nhap hop le: neu user khong con phien nao hoat dong
+        // (da dang xuat hoac tat ca phien da het han), tuyet doi khong gui push notification ve may.
+        boolean hasActiveSession = loginHistoryRepo.findByUserIdAndRevokedAtIsNullAndSessionIdIsNotNull(userId)
+            .stream()
+            .anyMatch(h -> h.getRefreshExpiresAt() != null && h.getRefreshExpiresAt().isAfter(LocalDateTime.now()));
+
+        if (!hasActiveSession) {
+            log.info("[FCM] User {} khong con phien dang nhap hop le (da dang xuat hoac het han) — bo qua gui push", userId);
             return;
         }
 
