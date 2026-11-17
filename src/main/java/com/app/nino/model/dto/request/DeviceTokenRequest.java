@@ -13,4 +13,8 @@ public class DeviceTokenRequest {
     private String platform;   // ANDROID, IOS, WEB
 
     private String deviceName; // tuy chon, VD: "iPhone 15 Pro"
+
+    /** Tuy chon — bo trong = giu nguyen gia tri hien co (mac dinh bat). */
+    private Boolean notifySound;
+    private Boolean notifyVibrate;
 }
