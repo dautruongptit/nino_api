@@ -32,6 +32,16 @@ public class UserDevice {
     @Column(name = "device_name")
     private String deviceName;
 
+    /** Phát chuông khi có thông báo — quyết định channel FCM dùng (xem FcmService.channelIdFor). */
+    @Builder.Default
+    @Column(name = "notify_sound", nullable = false)
+    private Boolean notifySound = true;
+
+    /** Rung khi có thông báo. */
+    @Builder.Default
+    @Column(name = "notify_vibrate", nullable = false)
+    private Boolean notifyVibrate = true;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
