@@ -30,7 +30,7 @@ public class JwtTokenProvider {
     @Value("${JWT_EXPIRATION:900000}")
     private long jwtExpiration;
 
-    @Value("${JWT_REFRESH_EXPIRATION:2592000000}")
+    @Value("${JWT_REFRESH_EXPIRATION:5184000000}")
     private long refreshExpiration;
 
     @Value("${app.jwt.max-refresh-expiration:7776000000}")
