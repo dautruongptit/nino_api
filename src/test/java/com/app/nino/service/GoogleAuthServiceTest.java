@@ -34,6 +34,7 @@ class GoogleAuthServiceTest {
     @Mock private UserRepository userRepo;
     @Mock private RoleRepository roleRepo;
     @Mock private LoginHistoryRepository loginHistoryRepo;
+    @Mock private com.app.nino.repository.RefreshTokenRepository refreshTokenRepo;
     @Mock private JwtTokenProvider jwtTokenProvider;
     @Mock private GoogleIdTokenVerifier googleIdTokenVerifier;
     @Mock private GoogleIdToken googleIdToken;

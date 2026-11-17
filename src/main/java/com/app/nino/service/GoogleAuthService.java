@@ -4,9 +4,11 @@ import com.app.nino.exception.ResourceNotFoundException;
 import com.app.nino.exception.UnauthorizedException;
 import com.app.nino.model.dto.response.AuthResponse;
 import com.app.nino.model.entity.LoginHistory;
+import com.app.nino.model.entity.RefreshToken;
 import com.app.nino.model.entity.Role;
 import com.app.nino.model.entity.User;
 import com.app.nino.repository.LoginHistoryRepository;
+import com.app.nino.repository.RefreshTokenRepository;
 import com.app.nino.repository.RoleRepository;
 import com.app.nino.repository.UserRepository;
 import com.app.nino.security.JwtTokenProvider;
@@ -21,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.security.GeneralSecurityException;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.Set;
@@ -39,12 +42,18 @@ public class GoogleAuthService {
     private final UserRepository         userRepo;
     private final RoleRepository         roleRepo;
     private final LoginHistoryRepository loginHistoryRepo;
+    private final RefreshTokenRepository refreshTokenRepo;
     private final JwtTokenProvider       jwtTokenProvider;
     private final GoogleIdTokenVerifier  googleIdTokenVerifier;
     private final GeoIpService           geoIpService;
 
     @Transactional
     public AuthResponse loginWithGoogle(String idToken, HttpServletRequest httpRequest, String deviceName) {
+        return loginWithGoogle(idToken, httpRequest, deviceName, null);
+    }
+
+    @Transactional
+    public AuthResponse loginWithGoogle(String idToken, HttpServletRequest httpRequest, String deviceName, String deviceId) {
         log.info("[GoogleAuth] Login attempt voi Google idToken");
 
         GoogleIdToken.Payload payload = verifyIdToken(idToken);
@@ -85,8 +94,10 @@ public class GoogleAuthService {
 
         String ip = DeviceParser.getClientIp(httpRequest);
         String sid = java.util.UUID.randomUUID().toString();
-        java.time.LocalDateTime refreshExpiresAt =
-            java.time.LocalDateTime.now().plus(java.time.Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs()));
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime refreshExpiresAt = now.plus(Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs()));
+        LocalDateTime maxExpiresAt = now.plus(Duration.ofMillis(jwtTokenProvider.getMaxRefreshExpirationMs()));
+
         handleSuccessLogin(user, ip);
         LoginHistory history = saveLoginHistory(user, ip, httpRequest.getHeader("User-Agent"), deviceName, sid, refreshExpiresAt);
         geoIpService.lookupAndUpdate(history.getId(), ip);
@@ -94,6 +105,18 @@ public class GoogleAuthService {
 
         String accessToken  = jwtTokenProvider.generateAccessToken(user.getId(), user.getRoles(), sid);
         String refreshToken = jwtTokenProvider.generateRefreshToken(user.getId(), sid);
+
+        RefreshToken rt = RefreshToken.builder()
+            .user(user)
+            .tokenHash(jwtTokenProvider.hashToken(refreshToken))
+            .sessionId(sid)
+            .deviceId(deviceId)
+            .createdAt(now)
+            .initialLoginAt(now)
+            .expiresAt(refreshExpiresAt)
+            .maxExpiresAt(maxExpiresAt)
+            .build();
+        refreshTokenRepo.save(rt);
 
         return AuthResponse.builder()
             .accessToken(accessToken).refreshToken(refreshToken)
@@ -121,18 +144,16 @@ public class GoogleAuthService {
             .orElseThrow(() -> new ResourceNotFoundException("Role", "ROLE_USER"));
 
         User user = User.builder()
-            .username(email)  // username chua dung toi noi khac — dung email cho chac chan unique
-            .fullName(fullName != null ? fullName : email)
+            .username(email)
             .email(email)
-            .googleId(googleId)
-            .authProvider(User.AuthProvider.GOOGLE)
-            .status("ACT")            // email da duoc Google xac thuc san
+            .fullName(fullName != null ? fullName : "Google User")
             .avatarUrl(avatarUrl)
-            // Set.of() tra ve collection immutable — Hibernate can .clear() collection
-            // nay khi merge entity (vd handleSuccessLogin save lai ngay sau khi tao),
-            // gay UnsupportedOperationException. Phai bọc bang collection mutable.
+            .googleId(googleId)
             .roles(new HashSet<>(Set.of(userRole)))
+            .status("ACT")
+            .isActive(true)
             .build();
+
         return userRepo.save(user);
     }
 
@@ -146,7 +167,7 @@ public class GoogleAuthService {
     }
 
     private LoginHistory saveLoginHistory(User user, String ip, String userAgent, String deviceName,
-                                           String sessionId, java.time.LocalDateTime refreshExpiresAt) {
+                                           String sessionId, LocalDateTime refreshExpiresAt) {
         LoginHistory history = LoginHistory.builder()
             .user(user)
             .ipAddress(ip)

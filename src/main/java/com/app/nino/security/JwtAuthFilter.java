@@ -41,7 +41,10 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         if (header != null && header.startsWith("Bearer ")) {
             String token = header.substring(7);
 
-            if (jwtTokenProvider.validateToken(token)
+            if (jwtTokenProvider.isExpired(token)) {
+                request.setAttribute("authErrorCode", "TOKEN_EXPIRED");
+                log.debug("[JwtAuthFilter] Access token da het han: uri={}", request.getRequestURI());
+            } else if (jwtTokenProvider.validateToken(token)
                     && "access".equals(jwtTokenProvider.getTokenType(token))) {
 
                 Long userId = jwtTokenProvider.getUserId(token);
@@ -69,6 +72,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 log.debug("[JwtAuthFilter] Xac thuc thanh cong: userId={} roles={} uri={}",
                     userId, roles, request.getRequestURI());
             } else {
+                request.setAttribute("authErrorCode", "UNAUTHORIZED");
                 log.debug("[JwtAuthFilter] Token khong hop le hoac sai loai: uri={}", request.getRequestURI());
             }
         }

@@ -37,6 +37,7 @@ class AuthServiceTest {
     @Mock private UserRepository userRepo;
     @Mock private RoleRepository roleRepo;
     @Mock private LoginHistoryRepository loginHistoryRepo;
+    @Mock private com.app.nino.repository.RefreshTokenRepository refreshTokenRepo;
     @Mock private UserDeviceRepository userDeviceRepo;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private JwtTokenProvider jwtTokenProvider;
@@ -356,114 +357,141 @@ class AuthServiceTest {
         verifyNoInteractions(geoIpService);
     }
 
-    // ── REFRESH TOKEN — session continuity ──────────────────────────────────
+        // ── REFRESH TOKEN — Rotation, Reuse Detection, Sliding Expiration ────────
 
-    @Test
-    void refreshToken_reusesSameSidForNewTokenPair() {
-        // Khong stub findBySessionId/getRefreshExpirationMs — mac dinh
-        // findBySessionId tra ve Optional.empty(), nen nhanh cap nhat
-        // refreshExpiresAt (dung getRefreshExpirationMs) khong chay toi; stub
-        // thua se bi STRICT_STUBS bao UnnecessaryStubbingException.
-        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
-        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
-        when(jwtTokenProvider.getUserId("old-refresh")).thenReturn(1L);
-        when(jwtTokenProvider.getSid("old-refresh")).thenReturn("sid-1");
-        when(userRepo.findById(1L)).thenReturn(java.util.Optional.of(
-            User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build()));
-
-        service.refreshToken("old-refresh");
-
-        verify(jwtTokenProvider).generateAccessToken(eq(1L), any(), eq("sid-1"));
-        verify(jwtTokenProvider).generateRefreshToken(eq(1L), eq("sid-1"));
-    }
-
-    @Test
-    void refreshToken_updatesRefreshExpiresAtOnMatchingHistoryRow() {
-        com.app.nino.model.entity.LoginHistory history = com.app.nino.model.entity.LoginHistory.builder()
-            .id(9L).sessionId("sid-1")
-            .refreshExpiresAt(java.time.LocalDateTime.now().minusDays(1)) // gia lap han cu, se duoc troi toi
+    private com.app.nino.model.entity.RefreshToken createTestRefreshToken(User user, String sid) {
+        return com.app.nino.model.entity.RefreshToken.builder()
+            .id(100L)
+            .user(user)
+            .tokenHash("hash-old")
+            .sessionId(sid)
+            .deviceId("device-123")
+            .createdAt(java.time.LocalDateTime.now().minusDays(1))
+            .initialLoginAt(java.time.LocalDateTime.now().minusDays(1))
+            .expiresAt(java.time.LocalDateTime.now().plusDays(29))
+            .maxExpiresAt(java.time.LocalDateTime.now().plusDays(89))
             .build();
-        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
-        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
-        when(jwtTokenProvider.getUserId("old-refresh")).thenReturn(1L);
-        when(jwtTokenProvider.getSid("old-refresh")).thenReturn("sid-1");
-        when(userRepo.findById(1L)).thenReturn(java.util.Optional.of(
-            User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build()));
-        when(jwtTokenProvider.getRefreshExpirationMs()).thenReturn(604_800_000L);
-        when(loginHistoryRepo.findBySessionId("sid-1")).thenReturn(java.util.Optional.of(history));
-
-        service.refreshToken("old-refresh");
-
-        assertTrue(history.getRefreshExpiresAt().isAfter(java.time.LocalDateTime.now().plusDays(6)));
-        verify(loginHistoryRepo).save(history);
     }
 
     @Test
-    void refreshToken_rejectsAlreadyRevokedSession() {
-        com.app.nino.model.entity.LoginHistory history = com.app.nino.model.entity.LoginHistory.builder()
-            .id(9L).sessionId("sid-1").revokedAt(java.time.LocalDateTime.now().minusMinutes(5))
+    void refreshToken_rotatesTokenAndSetsReplacedBy() {
+        User user = User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build();
+        com.app.nino.model.entity.RefreshToken oldToken = createTestRefreshToken(user, "sid-1");
+
+        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
+        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
+        when(jwtTokenProvider.hashToken("old-refresh")).thenReturn("hash-old");
+        when(refreshTokenRepo.findByTokenHashWithLock("hash-old")).thenReturn(java.util.Optional.of(oldToken));
+        when(jwtTokenProvider.getRefreshExpirationMs()).thenReturn(2_592_000_000L);
+        when(jwtTokenProvider.generateRefreshToken(1L, "sid-1")).thenReturn("new-refresh");
+        when(jwtTokenProvider.hashToken("new-refresh")).thenReturn("hash-new");
+        when(jwtTokenProvider.generateAccessToken(eq(1L), any(), eq("sid-1"))).thenReturn("new-access");
+
+        AuthResponse res = service.refreshToken("old-refresh", "device-123");
+
+        assertNotNull(res);
+        assertEquals("new-access", res.getAccessToken());
+        assertEquals("new-refresh", res.getRefreshToken());
+        assertNotNull(oldToken.getRevokedAt());
+        assertNotNull(oldToken.getReplacedBy());
+        verify(refreshTokenRepo).save(oldToken);
+        verify(refreshTokenRepo).save(oldToken.getReplacedBy());
+    }
+
+    @Test
+    void refreshToken_withinGracePeriod_throwsTokenReused_withoutRevokingSession() {
+        User user = User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build();
+        com.app.nino.model.entity.RefreshToken rotatedToken = createTestRefreshToken(user, "sid-1");
+        rotatedToken.setRevokedAt(java.time.LocalDateTime.now().minusSeconds(5)); // within 15s grace period
+        rotatedToken.setReplacedBy(com.app.nino.model.entity.RefreshToken.builder().id(101L).build());
+
+        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
+        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
+        when(jwtTokenProvider.hashToken("old-refresh")).thenReturn("hash-old");
+        when(refreshTokenRepo.findByTokenHashWithLock("hash-old")).thenReturn(java.util.Optional.of(rotatedToken));
+
+        com.app.nino.exception.UnauthorizedException ex = assertThrows(
+            com.app.nino.exception.UnauthorizedException.class,
+            () -> service.refreshToken("old-refresh")
+        );
+
+        assertEquals("TOKEN_REUSED", ex.getErrorCode());
+        // Verify session is NOT revoked and Redis blacklist is NOT called
+        verify(refreshTokenRepo, never()).revokeAllBySessionId(any(), any());
+        verify(tokenBlacklistService, never()).blacklist(any(), any());
+    }
+
+    @Test
+    void refreshToken_afterGracePeriod_triggersReuseDetection_andRevokesSession() {
+        User user = User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build();
+        com.app.nino.model.entity.RefreshToken stolenToken = createTestRefreshToken(user, "sid-1");
+        stolenToken.setRevokedAt(java.time.LocalDateTime.now().minusSeconds(20)); // > 15s after rotation!
+        stolenToken.setReplacedBy(com.app.nino.model.entity.RefreshToken.builder().id(101L).build());
+
+        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
+        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
+        when(jwtTokenProvider.hashToken("old-refresh")).thenReturn("hash-old");
+        when(refreshTokenRepo.findByTokenHashWithLock("hash-old")).thenReturn(java.util.Optional.of(stolenToken));
+
+        com.app.nino.exception.UnauthorizedException ex = assertThrows(
+            com.app.nino.exception.UnauthorizedException.class,
+            () -> service.refreshToken("old-refresh")
+        );
+
+        assertEquals("TOKEN_REUSED", ex.getErrorCode());
+        // Verify session WAS revoked and Redis blacklist WAS called
+        verify(refreshTokenRepo).revokeAllBySessionId(eq("sid-1"), any());
+        verify(tokenBlacklistService).blacklist(eq("sid-1"), any());
+    }
+
+    @Test
+    void refreshToken_exceedingMax90DaysAbsoluteExpiration_throwsTokenExpired() {
+        User user = User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build();
+        com.app.nino.model.entity.RefreshToken expiredToken = createTestRefreshToken(user, "sid-1");
+        expiredToken.setMaxExpiresAt(java.time.LocalDateTime.now().minusSeconds(1)); // exceeded 90 days
+
+        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
+        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
+        when(jwtTokenProvider.hashToken("old-refresh")).thenReturn("hash-old");
+        when(refreshTokenRepo.findByTokenHashWithLock("hash-old")).thenReturn(java.util.Optional.of(expiredToken));
+
+        com.app.nino.exception.UnauthorizedException ex = assertThrows(
+            com.app.nino.exception.UnauthorizedException.class,
+            () -> service.refreshToken("old-refresh")
+        );
+
+        assertEquals("TOKEN_EXPIRED", ex.getErrorCode());
+    }
+
+    @Test
+    void changePassword_updatesHash_andRevokesAllTokensAndSessions() {
+        User user = User.builder()
+            .id(1L)
+            .email("a@b.com")
+            .passwordHash("old-hash")
             .build();
-        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
-        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
-        when(jwtTokenProvider.getUserId("old-refresh")).thenReturn(1L);
-        when(jwtTokenProvider.getSid("old-refresh")).thenReturn("sid-1");
-        when(userRepo.findById(1L)).thenReturn(java.util.Optional.of(
-            User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build()));
-        when(loginHistoryRepo.findBySessionId("sid-1")).thenReturn(java.util.Optional.of(history));
+        when(userRepo.findById(1L)).thenReturn(java.util.Optional.of(user));
+        when(passwordEncoder.matches("oldPass", "old-hash")).thenReturn(true);
+        when(passwordEncoder.encode("newPass")).thenReturn("new-hash");
 
-        assertThrows(com.app.nino.exception.UnauthorizedException.class,
-            () -> service.refreshToken("old-refresh"));
+        com.app.nino.model.dto.request.ChangePasswordRequest req = new com.app.nino.model.dto.request.ChangePasswordRequest();
+        req.setOldPassword("oldPass");
+        req.setNewPassword("newPass");
+
+        service.changePassword(1L, req);
+
+        assertEquals("new-hash", user.getPasswordHash());
+        verify(userRepo).save(user);
+        verify(refreshTokenRepo).revokeAllByUserId(eq(1L), any());
+        verify(userDeviceRepo).deleteAllByUserId(1L);
     }
 
     @Test
-    void refreshToken_withNoMatchingHistoryRow_stillSucceeds() {
-        // Phien tao truoc migration V33 (sessionId=null trong DB) hoac dong
-        // da bi don rac — khong duoc de viec khong tim thay dong lich su lam
-        // hong luong refresh binh thuong. getRefreshExpirationMs() KHONG duoc
-        // stub o day vi khong co dong lich su nao de cap nhat refreshExpiresAt
-        // — stub thua se bi STRICT_STUBS bao UnnecessaryStubbingException.
-        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
-        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
-        when(jwtTokenProvider.getUserId("old-refresh")).thenReturn(1L);
-        when(jwtTokenProvider.getSid("old-refresh")).thenReturn("sid-1");
-        when(userRepo.findById(1L)).thenReturn(java.util.Optional.of(
-            User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build()));
-        when(loginHistoryRepo.findBySessionId("sid-1")).thenReturn(java.util.Optional.empty());
+    void logoutAll_revokesAllTokensAndSessions() {
+        service.logoutAll(1L);
 
-        assertDoesNotThrow(() -> service.refreshToken("old-refresh"));
-    }
-
-    @Test
-    void refreshToken_withNullSid_mintsFreshSidForNewTokenPair() {
-        // Token cu tao truoc khi co claim "sid" — getSid() tra ve null. Truoc
-        // khi sua, null do duoc truyen thang vao generateAccessToken/
-        // generateRefreshToken; JJWT bo claim null nen cap token MOI cung khong
-        // co sid — phien khong bao gio thu hoi duoc (refresh la cua so truot 7
-        // ngay). Bay gio phai sinh sid moi: cap token vua tao luon co sid.
-        when(jwtTokenProvider.validateToken("old-refresh")).thenReturn(true);
-        when(jwtTokenProvider.getTokenType("old-refresh")).thenReturn("refresh");
-        when(jwtTokenProvider.getUserId("old-refresh")).thenReturn(1L);
-        when(jwtTokenProvider.getSid("old-refresh")).thenReturn(null);
-        when(userRepo.findById(1L)).thenReturn(java.util.Optional.of(
-            User.builder().id(1L).email("a@b.com").roles(new java.util.HashSet<>()).build()));
-
-        assertDoesNotThrow(() -> service.refreshToken("old-refresh"));
-
-        org.mockito.ArgumentCaptor<String> accessSid = org.mockito.ArgumentCaptor.forClass(String.class);
-        org.mockito.ArgumentCaptor<String> refreshSid = org.mockito.ArgumentCaptor.forClass(String.class);
-        verify(jwtTokenProvider).generateAccessToken(eq(1L), any(), accessSid.capture());
-        verify(jwtTokenProvider).generateRefreshToken(eq(1L), refreshSid.capture());
-
-        assertNotNull(accessSid.getValue());
-        assertEquals(accessSid.getValue(), refreshSid.getValue()); // cung 1 phien
-        assertDoesNotThrow(() -> java.util.UUID.fromString(accessSid.getValue()));
-        // Sid vua sinh khong khop dong nao — va quan trong la KHONG bao gio goi
-        // findBySessionId(null): tren repository THAT, Hibernate dich "= NULL"
-        // thanh "IS NULL" va nem IncorrectResultSizeDataAccessException khi co
-        // nhieu hon 1 dong session_id null.
-        verify(loginHistoryRepo).findBySessionId(accessSid.getValue());
-        verify(loginHistoryRepo, never()).findBySessionId(null);
-        verifyNoMoreInteractions(loginHistoryRepo);
+        verify(refreshTokenRepo).revokeAllByUserId(eq(1L), any());
+        verify(userDeviceRepo).deleteAllByUserId(1L);
     }
 
     // ── LOGIN HISTORY — active/current-session flags ────────────────────────

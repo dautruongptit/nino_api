@@ -43,6 +43,7 @@ public class OtpService {
     private final ResendEmailService resendEmailService;
     private final JwtTokenProvider jwtTokenProvider;
     private final UserRepository userRepo;
+    private final com.app.nino.repository.RefreshTokenRepository refreshTokenRepo;
     private final TokenBlacklistService tokenBlacklistService;
 
     @Value("${app.otp.ttl-minutes:5}")
@@ -145,6 +146,19 @@ public class OtpService {
         String sid = UUID.randomUUID().toString();
         String accessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getRoles(), sid);
         String refreshToken = jwtTokenProvider.generateRefreshToken(user.getId(), sid);
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        java.time.LocalDateTime refreshExpiresAt = now.plus(java.time.Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs()));
+        java.time.LocalDateTime maxExpiresAt = now.plus(java.time.Duration.ofMillis(jwtTokenProvider.getMaxRefreshExpirationMs()));
+        com.app.nino.model.entity.RefreshToken rt = com.app.nino.model.entity.RefreshToken.builder()
+            .user(user)
+            .tokenHash(jwtTokenProvider.hashToken(refreshToken))
+            .sessionId(sid)
+            .createdAt(now)
+            .initialLoginAt(now)
+            .expiresAt(refreshExpiresAt)
+            .maxExpiresAt(maxExpiresAt)
+            .build();
+        refreshTokenRepo.save(rt);
         log.info("[Otp] Kich hoat tai khoan qua OTP: userId={} email={}", user.getId(), email);
 
         return OtpVerifyResponse.builder()

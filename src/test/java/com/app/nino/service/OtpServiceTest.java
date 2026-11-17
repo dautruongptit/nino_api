@@ -39,6 +39,7 @@ class OtpServiceTest {
     @Mock private ResendEmailService resendEmailService;
     @Mock private JwtTokenProvider jwtTokenProvider;
     @Mock private UserRepository userRepo;
+    @Mock private com.app.nino.repository.RefreshTokenRepository refreshTokenRepo;
     @Mock private TokenBlacklistService tokenBlacklistService;
 
     @InjectMocks

@@ -11,6 +11,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Date;
 import java.util.List;
 import java.util.Set;
@@ -24,11 +27,14 @@ public class JwtTokenProvider {
     @Value("${JWT_SECRET}")
     private String jwtSecret;
 
-    @Value("${JWT_EXPIRATION:86400000}")
+    @Value("${JWT_EXPIRATION:900000}")
     private long jwtExpiration;
 
-    @Value("${JWT_REFRESH_EXPIRATION:604800000}")
+    @Value("${JWT_REFRESH_EXPIRATION:2592000000}")
     private long refreshExpiration;
+
+    @Value("${app.jwt.max-refresh-expiration:7776000000}")
+    private long maxRefreshExpiration;
 
     @Value("${app.otp.reset-token-ttl-minutes:5}")
     private long otpResetTokenTtlMinutes;
@@ -48,6 +54,7 @@ public class JwtTokenProvider {
             .claim("roles", roleNames)
             .claim("type", "access")
             .claim("sid", sid)
+            .id(UUID.randomUUID().toString())
             .issuedAt(new Date())
             .expiration(new Date(System.currentTimeMillis() + jwtExpiration))
             .signWith(getSigningKey())
@@ -61,6 +68,7 @@ public class JwtTokenProvider {
             .subject(String.valueOf(userId))
             .claim("type", "refresh")
             .claim("sid", sid)
+            .id(UUID.randomUUID().toString())
             .issuedAt(new Date())
             .expiration(new Date(System.currentTimeMillis() + refreshExpiration))
             .signWith(getSigningKey())
@@ -84,6 +92,7 @@ public class JwtTokenProvider {
             .claim("type", "otp_reset")
             .claim("purpose", purpose)
             .claim("sid", sid)
+            .id(UUID.randomUUID().toString())
             .issuedAt(new Date())
             .expiration(new Date(System.currentTimeMillis() + otpResetTokenTtlMinutes * 60_000))
             .signWith(getSigningKey())
@@ -133,6 +142,33 @@ public class JwtTokenProvider {
         return true;
     }
 
+    public boolean isExpired(String token) {
+        try {
+            Jwts.parser().verifyWith(getSigningKey()).build().parseSignedClaims(token);
+            return false;
+        } catch (ExpiredJwtException e) {
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public String hashToken(String token) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        }
+    }
+
     /** Claim "sid" — dinh danh phien dang nhap, giu nguyen qua moi lan
      *  refresh (khac voi token thay doi moi lan cap). Dung de blacklist ca
      *  access lan refresh token cua 1 phien chi bang 1 lan ghi. */
@@ -146,6 +182,10 @@ public class JwtTokenProvider {
      *  LoginHistory ma khong phai tu khai bao lai @Value nay o noi khac. */
     public long getRefreshExpirationMs() {
         return refreshExpiration;
+    }
+
+    public long getMaxRefreshExpirationMs() {
+        return maxRefreshExpiration;
     }
 
     /** Thoi gian con lai truoc khi token tu het han — dung de dat TTL blacklist khi logout. */

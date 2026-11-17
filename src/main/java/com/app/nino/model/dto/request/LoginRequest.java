@@ -18,4 +18,8 @@ public class LoginRequest {
     /** Tuy chon — VD "Pixel 8", "iPhone 15 Pro" — hien thi trong lich su dang nhap. */
     @Size(max = 100, message = "deviceName toi da 100 ky tu")
     private String deviceName;
+
+    /** Dinh danh duy nhat cua thiet bi client. */
+    @Size(max = 100, message = "deviceId toi da 100 ky tu")
+    private String deviceId;
 }

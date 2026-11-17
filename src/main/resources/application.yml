@@ -100,8 +100,9 @@ spring:
 app:
   jwt:
     secret: ${JWT_SECRET}                       # BAT BUOC — khong co default
-    expiration: ${JWT_EXPIRATION:86400000}      # Access token: 24h (ms)
-    refresh-expiration: ${JWT_REFRESH_EXPIRATION:604800000}  # 7 ngay (ms)
+    expiration: ${JWT_EXPIRATION:900000}        # Access token: 15 phut (ms)
+    refresh-expiration: ${JWT_REFRESH_EXPIRATION:2592000000}  # 30 ngay (ms)
+    max-refresh-expiration: ${JWT_MAX_REFRESH_EXPIRATION:7776000000} # Tran toi da tuyet doi: 90 ngay (ms)
   # Upload avatar
   upload:
     avatar-dir: ${UPLOAD_AVATAR_DIR:uploads/avatars}

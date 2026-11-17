@@ -26,10 +26,18 @@ public class JsonAuthenticationEntryPoint implements AuthenticationEntryPoint {
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
                           AuthenticationException authException) throws IOException {
+        String errorCode = (String) request.getAttribute("authErrorCode");
+        if (errorCode == null) {
+            errorCode = "UNAUTHORIZED";
+        }
+        String message = "TOKEN_EXPIRED".equals(errorCode)
+            ? "Token đã hết hạn"
+            : "Bạn chưa đăng nhập hoặc token không hợp lệ";
+
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
         response.getWriter().write(objectMapper.writeValueAsString(
-            BaseResponse.error("Ban chua dang nhap hoac token khong hop le", "UNAUTHORIZED")));
+            BaseResponse.error(message, errorCode)));
     }
 }

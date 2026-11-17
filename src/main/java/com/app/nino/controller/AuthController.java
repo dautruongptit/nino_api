@@ -1,5 +1,6 @@
 package com.app.nino.controller;
 
+import com.app.nino.model.dto.request.ChangePasswordRequest;
 import com.app.nino.model.dto.request.GoogleLoginRequest;
 import com.app.nino.model.dto.request.LoginRequest;
 import com.app.nino.model.dto.request.LogoutRequest;
@@ -53,14 +54,15 @@ public class AuthController {
             @Valid @RequestBody GoogleLoginRequest req,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(
-            BaseResponse.success(googleAuthService.loginWithGoogle(req.getIdToken(), httpRequest, req.getDeviceName())));
+            BaseResponse.success(googleAuthService.loginWithGoogle(
+                req.getIdToken(), httpRequest, req.getDeviceName(), req.getDeviceId())));
     }
 
     @PostMapping("/refresh")
-    @Operation(summary = "Làm mới access token")
+    @Operation(summary = "Làm mới access token (Rotation + Sliding Expiration)")
     public ResponseEntity<BaseResponse<?>> refresh(@Valid @RequestBody RefreshTokenRequest req) {
         return ResponseEntity.ok(
-            BaseResponse.success(authService.refreshToken(req.getRefreshToken())));
+            BaseResponse.success(authService.refreshToken(req.getRefreshToken(), req.getDeviceId())));
     }
 
     @PostMapping("/logout")
@@ -76,6 +78,24 @@ public class AuthController {
             req != null ? req.getRefreshToken() : null,
             req != null ? req.getFcmToken() : null);
         return ResponseEntity.ok(BaseResponse.success(null, "Đăng xuất thành công"));
+    }
+
+    @PostMapping("/logout-all")
+    @Operation(summary = "Đăng xuất tất cả thiết bị",
+               description = "Thu hồi toàn bộ refresh token và phiên của người dùng trên mọi thiết bị.")
+    public ResponseEntity<BaseResponse<?>> logoutAll(@AuthenticationPrincipal Long userId) {
+        authService.logoutAll(userId);
+        return ResponseEntity.ok(BaseResponse.success(null, "Đã đăng xuất tất cả thiết bị"));
+    }
+
+    @PostMapping("/change-password")
+    @Operation(summary = "Đổi mật khẩu",
+               description = "Đổi mật khẩu và thu hồi toàn bộ phiên đăng nhập của người dùng.")
+    public ResponseEntity<BaseResponse<?>> changePassword(
+            @AuthenticationPrincipal Long userId,
+            @Valid @RequestBody ChangePasswordRequest req) {
+        authService.changePassword(userId, req);
+        return ResponseEntity.ok(BaseResponse.success(null, "Đổi mật khẩu thành công. Vui lòng đăng nhập lại."));
     }
 
     private String extractBearerToken(HttpServletRequest request) {

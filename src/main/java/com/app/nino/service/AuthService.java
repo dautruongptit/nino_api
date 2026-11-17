@@ -3,6 +3,7 @@ package com.app.nino.service;
 import com.app.nino.exception.BadRequestException;
 import com.app.nino.exception.ResourceNotFoundException;
 import com.app.nino.exception.UnauthorizedException;
+import com.app.nino.model.dto.request.ChangePasswordRequest;
 import com.app.nino.model.dto.request.LoginRequest;
 import com.app.nino.model.dto.request.RegisterRequest;
 import com.app.nino.model.dto.request.UpdateProfileRequest;
@@ -11,9 +12,11 @@ import com.app.nino.model.dto.response.AuthResponse;
 import com.app.nino.model.dto.response.LoginHistoryResponse;
 import com.app.nino.model.dto.response.UserProfileResponse;
 import com.app.nino.model.entity.LoginHistory;
+import com.app.nino.model.entity.RefreshToken;
 import com.app.nino.model.entity.Role;
 import com.app.nino.model.entity.User;
 import com.app.nino.repository.LoginHistoryRepository;
+import com.app.nino.repository.RefreshTokenRepository;
 import com.app.nino.repository.RoleRepository;
 import com.app.nino.repository.UserDeviceRepository;
 import com.app.nino.repository.UserRepository;
@@ -67,10 +70,11 @@ public class AuthService {
     private final UserRepository         userRepo;
     private final RoleRepository         roleRepo;
     private final LoginHistoryRepository loginHistoryRepo;
-    private final UserDeviceRepository   userDeviceRepo;        // NEW
+    private final RefreshTokenRepository refreshTokenRepo;
+    private final UserDeviceRepository   userDeviceRepo;
     private final PasswordEncoder        passwordEncoder;
     private final JwtTokenProvider       jwtTokenProvider;
-    private final TokenBlacklistService  tokenBlacklistService; // NEW
+    private final TokenBlacklistService  tokenBlacklistService;
     private final GeoIpService           geoIpService;
 
     // ── REGISTER ──────────────────────────────────────────────────────────────
@@ -91,17 +95,6 @@ public class AuthService {
             .fullName(req.getFullName())
             .email(req.getEmail())
             .passwordHash(passwordEncoder.encode(req.getPassword()))
-            // "REG" — tai khoan CHUA the dang nhap (User.canLogin() da loai
-            // tru status nay) cho toi khi xac minh email qua OTP (xem
-            // OtpService.verifyOtp, purpose=REGISTER). KHONG tra ve
-            // accessToken/refreshToken ngay o day — JwtAuthFilter tin thang
-            // claim trong token ma khong kiem tra lai canLogin() moi request,
-            // nen phat token dung ngay tai day se cho phep tai khoan CHUA
-            // xac minh dung duoc moi API nhu binh thuong — phai doi toi luc
-            // OTP verify thanh cong moi phat token that.
-            // HashSet (khong dung Set.of()) — Hibernate can goi .clear() tren
-            // collection nay khi merge/update entity ve sau; Set.of() la immutable
-            // se nem UnsupportedOperationException luc do.
             .roles(new HashSet<>(Set.of(userRole)))
             .build();
 
@@ -151,7 +144,10 @@ public class AuthService {
         }
 
         String sid = UUID.randomUUID().toString();
-        LocalDateTime refreshExpiresAt = LocalDateTime.now().plus(Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs()));
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime refreshExpiresAt = now.plus(Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs()));
+        LocalDateTime maxExpiresAt = now.plus(Duration.ofMillis(jwtTokenProvider.getMaxRefreshExpirationMs()));
+
         handleSuccessLogin(user, ip);
         LoginHistory history = saveLoginHistory(user, ip, userAgent, req.getDeviceName(), true, null, sid, refreshExpiresAt);
         geoIpService.lookupAndUpdate(history.getId(), ip);
@@ -159,6 +155,18 @@ public class AuthService {
 
         String accessToken  = jwtTokenProvider.generateAccessToken(user.getId(), user.getRoles(), sid);
         String refreshToken = jwtTokenProvider.generateRefreshToken(user.getId(), sid);
+
+        RefreshToken rt = RefreshToken.builder()
+            .user(user)
+            .tokenHash(jwtTokenProvider.hashToken(refreshToken))
+            .sessionId(sid)
+            .deviceId(req.getDeviceId())
+            .createdAt(now)
+            .initialLoginAt(now)
+            .expiresAt(refreshExpiresAt)
+            .maxExpiresAt(maxExpiresAt)
+            .build();
+        refreshTokenRepo.save(rt);
 
         return AuthResponse.builder()
             .accessToken(accessToken).refreshToken(refreshToken)
@@ -169,70 +177,115 @@ public class AuthService {
     // ── REFRESH TOKEN ─────────────────────────────────────────────────────────
     @Transactional
     public AuthResponse refreshToken(String refreshToken) {
+        return refreshToken(refreshToken, null);
+    }
+
+    @Transactional
+    public AuthResponse refreshToken(String refreshToken, String deviceId) {
         if (!jwtTokenProvider.validateToken(refreshToken)
                 || !"refresh".equals(jwtTokenProvider.getTokenType(refreshToken))) {
             log.warn("[Auth] Refresh token khong hop le hoac sai loai token");
-            throw new UnauthorizedException("Refresh token không hợp lệ hoặc đã hết hạn");
+            throw new UnauthorizedException("Refresh token không hợp lệ hoặc đã hết hạn", "TOKEN_EXPIRED");
         }
 
-        Long userId = jwtTokenProvider.getUserId(refreshToken);
-        String existingSid = jwtTokenProvider.getSid(refreshToken);
-        // Token cu (mint truoc khi co claim "sid") tra ve sid null. Neu cu de
-        // null thi JJWT bo claim "sid" khi tao token moi -> cap token moi CUNG
-        // khong co sid, va vi refresh la cua so truot 7 ngay, phien nay se mai
-        // mai khong the thu hoi duoc. Sinh sid moi ngay tai day de "tu chua":
-        // cap token vua tao da co sid, nen vong logout/refresh KE TIEP duoc
-        // bao ve day du theo sid.
-        //
-        // KHONG tao lai dong LoginHistory cho phien cu nay (ngoai pham vi
-        // spec): phien do van khong hien trong Login History va khong thu hoi
-        // tu xa duoc — gioi han da biet truoc. Nhung ke tu luc nay token luon
-        // chan duoc qua blacklist theo sid.
-        final String sid = existingSid != null ? existingSid : UUID.randomUUID().toString();
-        User user = userRepo.findById(userId)
-            .orElseThrow(() -> new ResourceNotFoundException("User", userId));
+        String tokenHash = jwtTokenProvider.hashToken(refreshToken);
+        RefreshToken token = refreshTokenRepo.findByTokenHashWithLock(tokenHash)
+            .orElseThrow(() -> {
+                log.warn("[Auth] Refresh token khong ton tai trong DB: hash={}", tokenHash);
+                return new UnauthorizedException("Refresh token không tồn tại hoặc đã hết hạn", "TOKEN_EXPIRED");
+            });
 
-        // sid da bi thu hoi (dang xuat tu xa) nhung Redis chua kip phan anh —
-        // hang phong thu thu 2 ben canh validateToken() da kiem tra blacklist.
-        //
-        // sid o day LUON khac null (xem doan tu chua ben tren) — quan trong vi
-        // findBySessionId(null) se bi Hibernate dich "= NULL" thanh "IS NULL",
-        // khop MOI dong co session_id null trong bang login_histories va nem
-        // IncorrectResultSizeDataAccessException khi co nhieu hon 1 dong nhu
-        // vay. Voi sid vua sinh moi se khong co dong nao khop — dung y do, token
-        // cu van phai refresh thanh cong, chi la khong co LoginHistory de cap
-        // nhat.
-        loginHistoryRepo.findBySessionId(sid).ifPresent(history -> {
-            if (history.getRevokedAt() != null) {
-                throw new UnauthorizedException("Phiên đăng nhập đã bị thu hồi");
+        LocalDateTime now = LocalDateTime.now();
+
+        // 1. Kiem tra xem token da bi vo hieu hoa chua (Rotation / Revocation / Reuse)
+        if (token.getRevokedAt() != null) {
+            if (token.getReplacedBy() != null) {
+                // Token nay da tung duoc rotate thanh mot token moi
+                long secondsSinceRevoked = Duration.between(token.getRevokedAt(), now).abs().toSeconds();
+                if (secondsSinceRevoked <= 15) {
+                    // Grace period 15s: Khong thu hoi session, chi tra 401 TOKEN_REUSED
+                    log.warn("[Auth] Token cu duoc dung lai trong grace period ({}s): sid={}", secondsSinceRevoked, token.getSessionId());
+                    throw new UnauthorizedException("Token đã được sử dụng lại", "TOKEN_REUSED");
+                } else {
+                    // Sau grace period > 15s: REUSE DETECTION! Thu hoi toan bo session_id!
+                    log.error("[Auth] PHAT HIEN TOKEN REUSE sau grace period ({}s)! Thu hoi toan bo session: sid={}",
+                        secondsSinceRevoked, token.getSessionId());
+                    refreshTokenRepo.revokeAllBySessionId(token.getSessionId(), now);
+                    tokenBlacklistService.blacklist(token.getSessionId(), Duration.ofDays(30));
+                    loginHistoryRepo.findBySessionId(token.getSessionId()).ifPresent(h -> {
+                        h.setRevokedAt(now);
+                        loginHistoryRepo.save(h);
+                    });
+                    throw new UnauthorizedException(
+                        "Phát hiện token bị sử dụng lại trái phép. Phiên đăng nhập đã bị thu hồi.", "TOKEN_REUSED");
+                }
+            } else {
+                log.warn("[Auth] Token da bi thu hoi truc tiep: sid={}", token.getSessionId());
+                throw new UnauthorizedException("Phiên đăng nhập đã bị thu hồi", "TOKEN_REVOKED");
             }
-            history.setRefreshExpiresAt(
-                LocalDateTime.now().plus(Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs())));
+        }
+
+        // 2. Kiem tra het han tu nhien hoac vuot qua tran sliding 90 ngay
+        if (token.getExpiresAt().isBefore(now)) {
+            log.warn("[Auth] Refresh token da het han: sid={} expiresAt={}", token.getSessionId(), token.getExpiresAt());
+            throw new UnauthorizedException("Refresh token đã hết hạn", "TOKEN_EXPIRED");
+        }
+        if (token.getMaxExpiresAt().isBefore(now)) {
+            log.warn("[Auth] Phien da vuot qua tran toi da 90 ngay: sid={} maxExpiresAt={}", token.getSessionId(), token.getMaxExpiresAt());
+            throw new UnauthorizedException("Phiên đăng nhập đã vượt quá thời hạn tối đa 90 ngày", "TOKEN_EXPIRED");
+        }
+
+        if (tokenBlacklistService.isBlacklisted(token.getSessionId())) {
+            log.warn("[Auth] Phien da bi blacklist: sid={}", token.getSessionId());
+            throw new UnauthorizedException("Phiên đăng nhập đã bị thu hồi", "TOKEN_REVOKED");
+        }
+
+        User user = token.getUser();
+        String sid = token.getSessionId();
+
+        // 3. Sliding expiration: cong them 30 ngay, toi da khong vuot qua maxExpiresAt (90 ngay tu login dau)
+        LocalDateTime calculatedExpiresAt = now.plus(Duration.ofMillis(jwtTokenProvider.getRefreshExpirationMs()));
+        final LocalDateTime newExpiresAt = calculatedExpiresAt.isAfter(token.getMaxExpiresAt())
+            ? token.getMaxExpiresAt()
+            : calculatedExpiresAt;
+
+        String newRefreshToken = jwtTokenProvider.generateRefreshToken(user.getId(), sid);
+        String newTokenHash = jwtTokenProvider.hashToken(newRefreshToken);
+
+        RefreshToken newToken = RefreshToken.builder()
+            .user(user)
+            .tokenHash(newTokenHash)
+            .sessionId(sid)
+            .deviceId(deviceId != null ? deviceId : token.getDeviceId())
+            .createdAt(now)
+            .initialLoginAt(token.getInitialLoginAt())
+            .expiresAt(newExpiresAt)
+            .maxExpiresAt(token.getMaxExpiresAt())
+            .build();
+        refreshTokenRepo.save(newToken);
+
+        token.setRevokedAt(now);
+        token.setReplacedBy(newToken);
+        refreshTokenRepo.save(token);
+
+        loginHistoryRepo.findBySessionId(sid).ifPresent(history -> {
+            history.setRefreshExpiresAt(newExpiresAt);
             loginHistoryRepo.save(history);
         });
 
-        String newAccessToken  = jwtTokenProvider.generateAccessToken(user.getId(), user.getRoles(), sid);
-        String newRefreshToken = jwtTokenProvider.generateRefreshToken(user.getId(), sid);
-        log.info("[Auth] Refresh token thanh cong: userId={} sid={}", userId, sid);
+        String newAccessToken = jwtTokenProvider.generateAccessToken(user.getId(), user.getRoles(), sid);
+        log.info("[Auth] Rotate refresh token thanh cong: userId={} sid={} newExpiresAt={}", user.getId(), sid, newExpiresAt);
 
         return AuthResponse.builder()
-            .accessToken(newAccessToken).refreshToken(newRefreshToken)
-            .userId(user.getId()).fullName(user.getFullName()).email(user.getEmail())
+            .accessToken(newAccessToken)
+            .refreshToken(newRefreshToken)
+            .userId(user.getId())
+            .fullName(user.getFullName())
+            .email(user.getEmail())
             .build();
     }
 
     // ── LOGOUT ────────────────────────────────────────────────────────────────
-    // Thu hoi ngay ca access lan refresh token cua PHIEN NAY (theo sid, khong
-    // phai tung chuoi token rieng le) — nen van hoat dong dung ke ca sau khi
-    // client da /auth/refresh nhieu lan. TTL blacklist phai phu het doi song
-    // cua REFRESH token, xem sessionBlacklistTtl().
-    //
-    // Token CU mint truoc khi co claim "sid" thi khong co sid de chan theo
-    // phien. Truong hop do phai quay ve co che cu: chan theo DUNG CHUOI TOKEN.
-    // Neu khong, moi phien dang hoat dong luc trien khai sid se logout "thanh
-    // cong" (200 OK) ma token van con hieu luc — mat hoan toan kha nang thu
-    // hoi token. Moi token duoc xet DOC LAP de an toan trong ca cac truong hop
-    // hon hop (1 token co sid, 1 token khong).
     @Transactional
     public void logout(Long userId, String accessToken, String refreshToken, String fcmToken) {
         boolean refreshValid = refreshToken != null && jwtTokenProvider.validateToken(refreshToken);
@@ -251,9 +304,10 @@ public class AuthService {
         }
 
         // Token co sid: 1 lan ghi blacklist chan ca phien, kem danh dau dong
-        // LoginHistory tuong ung la da thu hoi.
+        // LoginHistory tuong ung la da thu hoi va thu hoi trong refresh_tokens.
         String sid = accessSid != null ? accessSid : refreshSid;
         if (sid != null) {
+            refreshTokenRepo.revokeAllBySessionId(sid, LocalDateTime.now());
             LoginHistory history = loginHistoryRepo.findBySessionId(sid).orElse(null);
             tokenBlacklistService.blacklist(
                 sid, sessionBlacklistTtl(history, refreshValid ? refreshToken : null));
@@ -262,6 +316,13 @@ public class AuthService {
                 loginHistoryRepo.save(history);
             }
         }
+        if (refreshToken != null) {
+            String hash = jwtTokenProvider.hashToken(refreshToken);
+            refreshTokenRepo.findByTokenHash(hash).ifPresent(rt -> {
+                rt.setRevokedAt(LocalDateTime.now());
+                refreshTokenRepo.save(rt);
+            });
+        }
         if (fcmToken != null) {
             userDeviceRepo.deleteByFcmTokenAndUserId(fcmToken, userId);
         }
@@ -269,20 +330,40 @@ public class AuthService {
             userId, sid, legacyBlacklisted, fcmToken != null);
     }
 
+    // ── LOGOUT ALL ────────────────────────────────────────────────────────────
+    @Transactional
+    public void logoutAll(Long userId) {
+        LocalDateTime now = LocalDateTime.now();
+        refreshTokenRepo.revokeAllByUserId(userId, now);
+        List<LoginHistory> activeSessions = loginHistoryRepo.findByUserIdAndRevokedAtIsNullAndSessionIdIsNotNull(userId);
+        for (LoginHistory history : activeSessions) {
+            revoke(history);
+        }
+        userDeviceRepo.deleteAllByUserId(userId);
+        log.info("[Auth] Dang xuat tat ca thiet bi: userId={}", userId);
+    }
+
+    // ── CHANGE PASSWORD ───────────────────────────────────────────────────────
+    @Transactional
+    public void changePassword(Long userId, ChangePasswordRequest req) {
+        User user = userRepo.findById(userId)
+            .orElseThrow(() -> new ResourceNotFoundException("User", userId));
+
+        if (user.getPasswordHash() == null
+                || !passwordEncoder.matches(req.getOldPassword(), user.getPasswordHash())) {
+            throw new BadRequestException("Mật khẩu hiện tại không đúng");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(req.getNewPassword()));
+        userRepo.save(user);
+
+        logoutAll(userId);
+        log.info("[Auth] Doi mat khau thanh cong va thu hoi toan bo phien: userId={}", userId);
+    }
+
     /**
      * TTL blacklist cho CA PHIEN khi logout. Phai phu het doi song cua REFRESH
-     * token (toi 7 ngay), KHONG duoc lay theo access token (toi 24h): cung mot
-     * sid chi phoi ca hai, nen chan thieu dong nghia refresh token "song lai"
-     * ngay khi TTL ngan do het han — va /auth/refresh khong yeu cau xac thuc
-     * nen bat ky ai giu refresh token do cung dung lai duoc phien da dang xuat.
-     *
-     * Uu tien tu chinh xac nhat den an toan nhat:
-     *   1. Dong LoginHistory — han thuc te dang theo doi, da gom ca cua so truot.
-     *   2. Refresh token client gui kem (neu co) — han thuc cua chinh no.
-     *   3. Khong co ca hai: lay tron cua so refresh lam chan tren. Vi du phien
-     *      do register() tao khong he co dong LoginHistory, ma client thi chi
-     *      gui access token khi logout — khong the biet refresh token chua tung
-     *      thay con song bao lau, nen chan thua an toan hon chan thieu.
+     * token (toi 30 ngay), KHONG duoc lay theo access token (15 phut).
      */
     private Duration sessionBlacklistTtl(LoginHistory history, String validRefreshToken) {
         if (history != null && history.getRefreshExpiresAt() != null) {
@@ -364,6 +445,7 @@ public class AuthService {
 
         revokeAllOtherSessions(userId, null);
         userDeviceRepo.deleteAllByUserId(userId);
+        refreshTokenRepo.revokeAllByUserId(userId, LocalDateTime.now());
 
         user.setEmail("deleted-" + user.getId() + "@nino.local");
         user.setUsername("deleted-" + user.getId());
@@ -479,6 +561,9 @@ public class AuthService {
         tokenBlacklistService.blacklist(history.getSessionId(), ttl);
         history.setRevokedAt(LocalDateTime.now());
         loginHistoryRepo.save(history);
+        if (history.getSessionId() != null) {
+            refreshTokenRepo.revokeAllBySessionId(history.getSessionId(), LocalDateTime.now());
+        }
     }
 
     // ── GOOGLE CALENDAR (placeholder — chưa implement logic đồng bộ thật) ──────
