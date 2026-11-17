@@ -46,6 +46,10 @@ public class DeviceController {
             .map(existing -> {
                 existing.setUser(user);   // token co the thuoc user khac truoc do (doi tai khoan tren cung may)
                 existing.setDeviceName(req.getDeviceName());
+                // Chi doi khi client gui len — tranh dat lai ve mac dinh khi
+                // token chi duoc lam moi (khong kem cai dat).
+                if (req.getNotifySound() != null) existing.setNotifySound(req.getNotifySound());
+                if (req.getNotifyVibrate() != null) existing.setNotifyVibrate(req.getNotifyVibrate());
                 return existing;
             })
             .orElseGet(() -> UserDevice.builder()
@@ -53,6 +57,8 @@ public class DeviceController {
                 .fcmToken(req.getFcmToken())
                 .platform(UserDevice.Platform.valueOf(req.getPlatform().toUpperCase()))
                 .deviceName(req.getDeviceName())
+                .notifySound(req.getNotifySound() == null || req.getNotifySound())
+                .notifyVibrate(req.getNotifyVibrate() == null || req.getNotifyVibrate())
                 .build());
 
         deviceRepo.save(device);
