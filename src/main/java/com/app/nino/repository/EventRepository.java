@@ -68,6 +68,13 @@ public interface EventRepository extends JpaRepository<Event, Long> {
 
     List<Event> findByRecurrenceTypeAndIsActiveTrue(Event.RecurrenceType recurrenceType);
 
+    /**
+     * Sự kiện lặp đang active thuộc 1 danh mục mà event_date đã qua mốc [date] —
+     * YearlyRecurrenceScheduler dời sang lần tới (chỉ danh mục Sinh nhật).
+     */
+    List<Event> findByRecurrenceTypeAndCategory_CodeAndIsActiveTrueAndEventDateBefore(
+        Event.RecurrenceType recurrenceType, String categoryCode, LocalDate date);
+
     // ── Don dep Event tu Lich nghi le da qua han ─────────────────────────
     // JOIN FETCH e.reminders + e.user: HolidayReminderCleanupScheduler
     // KHONG con @Transactional (xem comment cua lop do) nen khong co Hibernate
