@@ -57,47 +57,79 @@ public class FcmService {
             return;
         }
 
-        List<String> tokens = devices.stream()
-            .map(UserDevice::getFcmToken)
-            .collect(Collectors.toList());
+        // Am thanh/rung tren Android 8+ do channel quyet dinh, nen gom thiet bi
+        // theo cai dat (chuong, rung) va gui moi nhom 1 lan voi channel tuong ung.
+        Map<String, List<UserDevice>> groups = devices.stream()
+            .collect(Collectors.groupingBy(d -> channelIdFor(isOn(d.getNotifySound()), isOn(d.getNotifyVibrate()))));
 
-        MulticastMessage message = MulticastMessage.builder()
-            .setNotification(Notification.builder()
-                .setTitle(title)
-                .setBody(body)
-                .build())
-            .putAllData(createDataPayload(title, body, data))
-            .addAllTokens(tokens)
-            .setAndroidConfig(AndroidConfig.builder()
-                .setPriority(AndroidConfig.Priority.HIGH)
-                .setNotification(AndroidNotification.builder()
-                    .setSound("default")
-                    .setChannelId("nino_event_reminders")
-                    .setDefaultSound(true)
-                    .setDefaultVibrateTimings(true)
-                    .setPriority(AndroidNotification.Priority.MAX)
-                    .setVisibility(AndroidNotification.Visibility.PUBLIC)
+        groups.forEach((channelId, group) -> {
+            boolean sound = isOn(group.get(0).getNotifySound());
+            boolean vibrate = isOn(group.get(0).getNotifyVibrate());
+            List<String> tokens = group.stream().map(UserDevice::getFcmToken).collect(Collectors.toList());
+
+            MulticastMessage message = MulticastMessage.builder()
+                .setNotification(Notification.builder()
+                    .setTitle(title)
+                    .setBody(body)
                     .build())
-                .build())
-            .setApnsConfig(ApnsConfig.builder()
-                .setAps(Aps.builder()
-                    .setSound("default")
-                    .setBadge(1)
+                .putAllData(createDataPayload(title, body, data))
+                .addAllTokens(tokens)
+                .setAndroidConfig(AndroidConfig.builder()
+                    .setPriority(AndroidConfig.Priority.HIGH)
+                    .setNotification(androidNotification(channelId, sound, vibrate))
                     .build())
-                .build())
-            .build();
+                .setApnsConfig(ApnsConfig.builder().setAps(apsFor(sound)).build())
+                .build();
 
-        try {
-            BatchResponse response = FirebaseMessaging.getInstance().sendEachForMulticast(message);
-            log.info("[FCM] Gui push userId={}: {} thanh cong, {} that bai",
-                userId, response.getSuccessCount(), response.getFailureCount());
+            try {
+                BatchResponse response = FirebaseMessaging.getInstance().sendEachForMulticast(message);
+                log.info("[FCM] Gui push userId={} channel={}: {} thanh cong, {} that bai",
+                    userId, channelId, response.getSuccessCount(), response.getFailureCount());
 
-            if (response.getFailureCount() > 0) {
-                cleanupInvalidTokens(tokens, response);
+                if (response.getFailureCount() > 0) {
+                    cleanupInvalidTokens(tokens, response);
+                }
+            } catch (FirebaseMessagingException e) {
+                log.error("[FCM] Loi gui push userId={}: {}", userId, e.getMessage());
             }
-        } catch (FirebaseMessagingException e) {
-            log.error("[FCM] Loi gui push userId={}: {}", userId, e.getMessage());
-        }
+        });
+    }
+
+    // ── Channel theo cai dat chuong/rung ─────────────────────────────────────
+    // Phai KHOP voi 4 channel app tao san (mobile: NotificationChannels).
+    public static final String CHANNEL_SOUND_VIBRATE = "nino_event_reminders";
+    public static final String CHANNEL_SOUND_ONLY     = "nino_event_reminders_sound";
+    public static final String CHANNEL_VIBRATE_ONLY   = "nino_event_reminders_vibrate";
+    public static final String CHANNEL_SILENT         = "nino_event_reminders_silent";
+
+    public static String channelIdFor(boolean sound, boolean vibrate) {
+        if (sound && vibrate) return CHANNEL_SOUND_VIBRATE;
+        if (sound)            return CHANNEL_SOUND_ONLY;
+        if (vibrate)          return CHANNEL_VIBRATE_ONLY;
+        return CHANNEL_SILENT;
+    }
+
+    /** null (thiet bi dang ky truoc khi co cot) coi nhu bat. */
+    private static boolean isOn(Boolean value) {
+        return value == null || value;
+    }
+
+    private static AndroidNotification androidNotification(String channelId, boolean sound, boolean vibrate) {
+        AndroidNotification.Builder builder = AndroidNotification.builder()
+            .setChannelId(channelId)
+            .setPriority(AndroidNotification.Priority.MAX)
+            .setVisibility(AndroidNotification.Visibility.PUBLIC);
+        // Android < 8 khong co channel nen cung dat theo tung message.
+        if (sound) builder.setSound("default").setDefaultSound(true);
+        if (vibrate) builder.setDefaultVibrateTimings(true);
+        return builder.build();
+    }
+
+    /** iOS: tat chuong = khong dat sound (iOS khong cho app dieu khien rung rieng). */
+    private static Aps apsFor(boolean sound) {
+        Aps.Builder aps = Aps.builder().setBadge(1);
+        if (sound) aps.setSound("default");
+        return aps.build();
     }
 
     /**
