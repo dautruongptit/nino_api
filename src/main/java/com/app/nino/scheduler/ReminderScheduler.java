@@ -116,18 +116,24 @@ public class ReminderScheduler {
             .max(Comparator.comparing(DueReminder::trigger))
             .orElseThrow();
 
+        // Đánh dấu các mốc bị gộp TRƯỚC khi bắn (cùng triết lý "ghi
+        // notifiedAt trước khi gọi mạng ngoài" ở fireReminder). Trước đây
+        // vòng này chạy SAU fireReminder: nếu fireReminder đã lưu
+        // notification + notifiedAt rồi mới văng exception (FCM, evict
+        // cache...), catch return sớm khiến các mốc gộp KHÔNG được đánh dấu
+        // và bị bắn thành push riêng ở lượt quét sau (sự kiện "a"
+        // 2026-11-18: mốc "Đúng giờ" bắn lẻ lúc 02:05 dù đã gộp lúc 02:00).
         try {
+            for (DueReminder skipped : group) {
+                if (skipped == toNotify) continue;
+                skipped.reminder.setNotifiedAt(now);
+                reminderRepo.save(skipped.reminder);
+            }
             fireReminder(toNotify.reminder, toNotify.event, now);
         } catch (Exception e) {
             log.error("[Scheduler] Loi khi xu ly reminder id={} (event id={}): {}",
-                toNotify.reminder.getId(), toNotify.event.getId(), e.getMessage());
+                toNotify.reminder.getId(), toNotify.event.getId(), e.getMessage(), e);
             return 0;
-        }
-
-        for (DueReminder skipped : group) {
-            if (skipped == toNotify) continue;
-            skipped.reminder.setNotifiedAt(now);
-            reminderRepo.save(skipped.reminder);
         }
 
         return 1;
@@ -163,7 +169,7 @@ public class ReminderScheduler {
     }
 
     private void fireReminder(EventReminder reminder, Event event, LocalDateTime now) {
-        NotificationTemplateService.NotificationContent content = templateService.build(event, reminder);
+        NotificationTemplateService.NotificationContent content = templateService.build(event, reminder, now);
         String title = content.title();
         String body  = content.body();
 

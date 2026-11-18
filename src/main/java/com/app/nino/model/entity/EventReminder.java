@@ -55,18 +55,34 @@ public class EventReminder {
         this.createdAt = LocalDateTime.now();
     }
 
+    /** Quy ước mobile: remindHoursBefore == 0 nghĩa là "30 phút trước"
+     *  (event_form_screen.dart._reminderLabel, local_notification_service.dart). */
+    public static final int HOURS_ZERO_MEANS_MINUTES = 30;
+
     /** Tính thời điểm trigger thực sự dựa trên ngày/giờ sự kiện + mốc nhắc */
     public LocalDateTime computeTriggerTime(LocalDate eventDate, LocalTime eventTime) {
         LocalDateTime base = LocalDateTime.of(eventDate, eventTime != null ? eventTime : LocalTime.of(8, 0));
-        if (remindDaysBefore != null) {
-            return base.minusDays(remindDaysBefore);
+        return base.minusMinutes(offsetMinutes());
+    }
+
+    /**
+     * Số phút trước sự kiện mà mốc nhắc này bắn — PHẢI khớp mobile
+     * (ReminderModel.displayText / _computeTriggerTime). Mobile gửi "30 phút
+     * trước" dưới dạng {remindDaysBefore: 0, remindHoursBefore: 0}; trước đây
+     * nhánh days != null bắt trước nên ra minusDays(0) = đúng giờ sự kiện,
+     * trong khi nhãn thông báo lại ghi "Sau 30 phút" (sự kiện "a" 2026-11-18).
+     * Vì vậy days chỉ tính khi > 0.
+     */
+    public int offsetMinutes() {
+        if (remindDaysBefore != null && remindDaysBefore > 0) {
+            return remindDaysBefore * 24 * 60;
         }
         if (remindHoursBefore != null) {
-            return base.minusHours(remindHoursBefore);
+            return remindHoursBefore == 0 ? HOURS_ZERO_MEANS_MINUTES : remindHoursBefore * 60;
         }
-        if (remindMinutesBefore != null) {
-            return base.minusMinutes(remindMinutesBefore);
+        if (remindMinutesBefore != null && remindMinutesBefore > 0) {
+            return remindMinutesBefore;
         }
-        return base;
+        return 0;
     }
 }

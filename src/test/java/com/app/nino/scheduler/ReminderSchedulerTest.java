@@ -285,4 +285,25 @@ class ReminderSchedulerTest {
         verify(reminderRepo).save(argThat((EventReminder r) ->
             r.getId().equals(101L) && r.getNotifiedAt() != null));
     }
+
+    @Test
+    void checkReminders_fireFailsAfterPersisting_groupedRemindersStillMarked() {
+        // Sự kiện "a" 2026-11-18: mốc gộp chưa được đánh dấu khi fireReminder
+        // văng exception -> bắn lẻ ở lượt quét sau.
+        Event event = eventOn(LocalDate.now(), LocalTime.now().minusMinutes(1));
+        EventReminder thirtyMin = EventReminder.builder()
+            .id(134L).event(event).remindDaysBefore(0).remindHoursBefore(0).isEnabled(true).build();
+        EventReminder onTime = EventReminder.builder()
+            .id(135L).event(event).isEnabled(true).build();
+
+        when(reminderRepo.findDueCandidates(any())).thenReturn(List.of(thirtyMin, onTime));
+        when(cacheManager.getCache("unreadCount")).thenThrow(new RuntimeException("redis down"));
+
+        scheduler.checkReminders();
+
+        verify(reminderRepo).save(argThat((EventReminder r) ->
+            r.getId().equals(134L) && r.getNotifiedAt() != null));
+        verify(reminderRepo).save(argThat((EventReminder r) ->
+            r.getId().equals(135L) && r.getNotifiedAt() != null));
+    }
 }

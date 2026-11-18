@@ -6,6 +6,9 @@ import com.app.nino.model.entity.EventReminder;
 import com.app.nino.model.entity.Relative;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 
 /** Sinh title/body cho Notification, thay cho chuoi hardcode truoc day o
@@ -32,14 +35,53 @@ public class NotificationTemplateService {
 
     private static final String BIRTHDAY_CATEGORY_CODE = "SINH_NHAT";
 
+    /** Sai số cho phép giữa thời gian còn lại thực tế và mốc nhắc danh nghĩa
+     *  trước khi chuyển sang ghi thời gian thực tế — bằng chu kỳ quét của
+     *  ReminderScheduler (5 phút), để nhắc bắn đúng hạn vẫn giữ nhãn tròn
+     *  "Sau 1 giờ" thay vì "Sau 57 phút". */
+    static final int ON_TIME_TOLERANCE_MINUTES = 5;
+
+    /** Nhãn theo mốc danh nghĩa — dùng khi không biết thời điểm bắn. */
     public NotificationContent build(Event event, EventReminder reminder) {
+        return build(event, reminder, null);
+    }
+
+    /**
+     * @param now thời điểm bắn thực tế. Nếu nhắc bị bắn trễ (VD: tạo sự kiện
+     *            lúc 01:34 cho 02:00 với mốc "1 giờ trước" -> bắn ngay lúc
+     *            01:35), nhãn ghi theo thời gian CÒN LẠI thật ("Sau 25 phút")
+     *            thay vì mốc danh nghĩa ("Sau 1 giờ") gây hiểu nhầm.
+     */
+    public NotificationContent build(Event event, EventReminder reminder, LocalDateTime now) {
         EventCategory category = event.getCategory();
         String icon = category.getIcon();
         String emoji = icon != null ? ICON_EMOJI.getOrDefault(icon, DEFAULT_ICON_EMOJI) : DEFAULT_ICON_EMOJI;
         boolean daysScale = isDaysScale(reminder);
         String title = emoji + " " + category.getDisplayName() + (daysScale ? " sắp tới" : " sắp đến");
-        String body = subject(event, category) + " · " + timingPhrase(reminder);
+        String timing = (now != null && event.getEventDate() != null)
+            ? actualTimingPhrase(event, reminder, now)
+            : timingPhrase(reminder);
+        String body = subject(event, category) + " · " + timing;
         return new NotificationContent(title, body);
+    }
+
+    private String actualTimingPhrase(Event event, EventReminder reminder, LocalDateTime now) {
+        if (isDaysScale(reminder)) {
+            long days = ChronoUnit.DAYS.between(now.toLocalDate(), event.getEventDate());
+            if (days <= 0) return "Hôm nay";
+            return days == 1 ? "Ngày mai" : "Còn " + days + " ngày";
+        }
+        LocalDateTime eventAt = LocalDateTime.of(event.getEventDate(),
+            event.getEventTime() != null ? event.getEventTime() : LocalTime.of(8, 0));
+        long remaining = ChronoUnit.MINUTES.between(now.truncatedTo(ChronoUnit.MINUTES), eventAt);
+        if (Math.abs(remaining - reminder.offsetMinutes()) <= ON_TIME_TOLERANCE_MINUTES) {
+            return timingPhrase(reminder);
+        }
+        if (remaining <= 0) return "Hôm nay";
+        if (remaining < 60) return "Sau " + remaining + " phút";
+        long h = remaining / 60;
+        long m = remaining % 60;
+        return m == 0 ? "Sau " + h + " giờ" : "Sau " + h + " giờ " + m + " phút";
     }
 
     private boolean isDaysScale(EventReminder reminder) {

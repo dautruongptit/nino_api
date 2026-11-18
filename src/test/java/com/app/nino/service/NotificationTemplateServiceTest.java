@@ -6,6 +6,10 @@ import com.app.nino.model.entity.EventReminder;
 import com.app.nino.model.entity.Relative;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class NotificationTemplateServiceTest {
@@ -210,5 +214,50 @@ class NotificationTemplateServiceTest {
         Event event = baseEvent(category("KHAC", "Khác", "more_horiz")).build();
         var content = service.build(event, baseReminder().build());
         assertEquals("Họp nhóm · Hôm nay", content.body());
+    }
+
+    // ── Timing phrase theo thời gian còn lại thực tế (có now) ───────────────
+
+    private Event eventAt(int hour, int minute) {
+        return baseEvent(category("KHAC", "Khác", "more_horiz"))
+            .eventDate(LocalDate.of(2026, 11, 18)).eventTime(LocalTime.of(hour, minute)).build();
+    }
+
+    @Test
+    void actualTiming_firedLate_usesRealRemainingTime() {
+        // Sự kiện "a": tạo 01:34 cho 02:00, mốc "1 giờ trước" bắn ngay 01:35.
+        var content = service.build(eventAt(2, 0), baseReminder().remindHoursBefore(1).build(),
+            LocalDateTime.of(2026, 11, 18, 1, 35, 0, 340_000));
+        assertEquals("Họp nhóm · Sau 25 phút", content.body());
+    }
+
+    @Test
+    void actualTiming_onTime_keepsNominalLabel() {
+        var content = service.build(eventAt(2, 0), baseReminder().remindHoursBefore(1).build(),
+            LocalDateTime.of(2026, 11, 18, 1, 0, 0, 600_000));
+        assertEquals("Họp nhóm · Sau 1 giờ", content.body());
+    }
+
+    @Test
+    void actualTiming_withinScanTolerance_keepsNominalLabel() {
+        // Giờ sự kiện lẻ (17:47) -> trigger 16:47, lượt quét 5' bắt lúc 16:50.
+        var content = service.build(eventAt(17, 47), baseReminder().remindHoursBefore(1).build(),
+            LocalDateTime.of(2026, 11, 18, 16, 50));
+        assertEquals("Họp nhóm · Sau 1 giờ", content.body());
+    }
+
+    @Test
+    void actualTiming_hoursAndMinutesRemaining() {
+        var content = service.build(eventAt(12, 0), baseReminder().remindHoursBefore(3).build(),
+            LocalDateTime.of(2026, 11, 18, 10, 20));
+        assertEquals("Họp nhóm · Sau 1 giờ 40 phút", content.body());
+    }
+
+    @Test
+    void actualTiming_daysScaleFiredLate_usesDateDifference() {
+        // Mốc "3 ngày trước" nhưng chỉ bắn được khi còn 1 ngày.
+        var content = service.build(eventAt(9, 0), baseReminder().remindDaysBefore(3).build(),
+            LocalDateTime.of(2026, 11, 17, 9, 0));
+        assertEquals("Họp nhóm · Ngày mai", content.body());
     }
 }
